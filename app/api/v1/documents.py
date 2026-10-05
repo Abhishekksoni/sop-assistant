@@ -1,11 +1,12 @@
 import os
 import urllib.parse
-from fastapi import APIRouter, UploadFile, File, Form, HTTPException, Request, Query, status
+from fastapi import APIRouter, UploadFile, File, Form, HTTPException, Request, Query, status, Depends
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 from typing import List, Optional, Dict, Any
 
 from app.core.config import settings
+from app.core.security import require_admin
 from app.services.vector_store_service import vector_store_service
 
 router = APIRouter()
@@ -88,6 +89,7 @@ async def upload_pdf(
     document_status: str = Form(default="active", description="Status (e.g. 'active', 'draft', 'archived')"),
     chunk_size: int = Form(default=600, description="Text chunk size for splitting"),
     chunk_overlap: int = Form(default=100, description="Overlap between consecutive chunks"),
+    current_admin: Dict[str, Any] = Depends(require_admin),
 ):
     if not file.filename.lower().endswith(".pdf"):
         raise HTTPException(
@@ -137,6 +139,56 @@ async def upload_pdf(
         )
 
 
+class ChatMessage(BaseModel):
+    role: str = Field(..., description="'user' or 'assistant'")
+    content: str
+
+
+class ChatQueryRequest(BaseModel):
+    message: str = Field(..., description="User question or prompt", example="What is the calibration frequency for analytical balances?")
+    history: Optional[List[ChatMessage]] = Field(default=[], description="Previous conversation messages for context")
+    department: Optional[str] = Field(None, description="Filter by department")
+    document_id: Optional[str] = Field(None, description="Filter by document ID")
+    user_id: Optional[str] = Field(None, description="User UUID")
+    user_role: Optional[str] = Field("master_admin", description="Role: 'master_admin', 'admin', 'employee'")
+
+
+class ChatQueryResponse(BaseModel):
+    answer: str
+    sources: List[SearchResultItem]
+
+
+@router.post(
+    "/chat",
+    response_model=ChatQueryResponse,
+    summary="Ask an AI question grounded in SOP documents with page hyperlinks",
+)
+def chat_with_documents(payload: ChatQueryRequest, request: Request):
+    try:
+        base_url = str(request.base_url).rstrip("/")
+        history_dicts = [{"role": m.role, "content": m.content} for m in payload.history] if payload.history else []
+        rag_res = vector_store_service.ask_rag_question(
+            query=payload.message,
+            conversation_history=history_dicts,
+            department=payload.department,
+            document_id=payload.document_id,
+            for_user_id=payload.user_id,
+            user_role=payload.user_role or "master_admin",
+            base_url=base_url,
+        )
+        return ChatQueryResponse(
+            answer=rag_res["answer"],
+            sources=[SearchResultItem(**s) for s in rag_res["sources"]],
+        )
+    except ValueError as ve:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(ve))
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to generate AI response: {str(exc)}",
+        )
+
+
 @router.post(
     "/search",
     response_model=SearchResponse,
@@ -152,7 +204,7 @@ def search_documents(payload: SearchQueryRequest, request: Request):
             status=payload.status,
             document_id=payload.document_id,
             for_user_id=payload.user_id,
-            user_role=payload.user_role or "admin",
+            user_role=payload.user_role or "master_admin",
             base_url=base_url,
         )
         return SearchResponse(
@@ -167,6 +219,7 @@ def search_documents(payload: SearchQueryRequest, request: Request):
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to perform similarity search: {str(exc)}",
         )
+
 
 
 @router.get(
@@ -215,7 +268,10 @@ def get_document(document_id: str):
     "/{document_id}",
     summary="Delete a document and all its embedded chunks",
 )
-def delete_document(document_id: str):
+def delete_document(
+    document_id: str,
+    current_admin: Dict[str, Any] = Depends(require_admin),
+):
     try:
         deleted = vector_store_service.delete_document(document_id)
         if not deleted:

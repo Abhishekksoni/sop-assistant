@@ -31,6 +31,22 @@ class UserService:
             # Ensure marked as master admin & role master_admin
             if not user.get("is_master_admin") or user.get("role") != "master_admin":
                 supabase.table("users").update({"is_master_admin": True, "role": "master_admin"}).eq("user_id", user["user_id"]).execute()
+            
+            # Also ensure default employee account exists
+            try:
+                emp_check = supabase.table("users").select("user_id").eq("email", "employee@sop.com").execute()
+                if not emp_check.data:
+                    supabase.table("users").insert({
+                        "email": "employee@sop.com",
+                        "password_hash": hash_password("123456"),
+                        "full_name": "Lab Operator (Employee)",
+                        "role": "employee",
+                        "department": "QC Analytical Lab",
+                        "is_master_admin": False,
+                    }).execute()
+            except Exception as e:
+                print(f"Notice: seeding employee account: {e}")
+
             return user
 
         # Create master admin
@@ -46,7 +62,24 @@ class UserService:
         create_res = supabase.table("users").insert(new_admin).execute()
         if not create_res.data:
             raise ValueError("Failed to seed Master Admin in Supabase.")
-        return create_res.data[0]
+        master_user = create_res.data[0]
+
+        # Ensure employee demo account exists for quick testing
+        try:
+            emp_check = supabase.table("users").select("user_id").eq("email", "employee@sop.com").execute()
+            if not emp_check.data:
+                supabase.table("users").insert({
+                    "email": "employee@sop.com",
+                    "password_hash": hash_password("123456"),
+                    "full_name": "Lab Operator (Employee)",
+                    "role": "employee",
+                    "department": "QC Analytical Lab",
+                    "is_master_admin": False,
+                }).execute()
+        except Exception as e:
+            print(f"Notice: seeding employee account: {e}")
+
+        return master_user
 
     def authenticate_user(self, email: str, password: str) -> Optional[Dict[str, Any]]:
         """Verifies credentials and returns user record if valid."""

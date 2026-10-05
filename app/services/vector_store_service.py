@@ -240,10 +240,21 @@ class VectorStoreService:
         for_user_id: Optional[str] = None,
         user_role: str = "admin",
         base_url: Optional[str] = None,
+        min_similarity: float = 0.70,
     ) -> List[Dict[str, Any]]:
-        """Performs vector similarity search joined with documents using match_document_chunks RPC."""
+        """Performs vector similarity search joined with documents using match_document_chunks RPC, filtered by min_similarity."""
         embeddings = self.get_embeddings()
         query_vector = embeddings.embed_query(query)
+
+        def is_valid_uuid(val: Any) -> bool:
+            if not val:
+                return False
+            try:
+                import uuid
+                uuid.UUID(str(val))
+                return True
+            except (ValueError, TypeError, AttributeError):
+                return False
 
         supabase = self.get_supabase_client()
         rpc_params = {
@@ -251,8 +262,8 @@ class VectorStoreService:
             "match_count": k,
             "filter_department": department,
             "filter_status": status,
-            "filter_document_id": document_id,
-            "for_user_id": for_user_id,
+            "filter_document_id": document_id if is_valid_uuid(document_id) else None,
+            "for_user_id": for_user_id if is_valid_uuid(for_user_id) else None,
             "user_role": user_role,
         }
 
@@ -261,9 +272,15 @@ class VectorStoreService:
 
         search_items = []
         for row in raw_results:
+            sim = row.get("similarity")
+            # Only keep results if similarity is >= min_similarity (0.70)
+            if sim is not None and float(sim) < min_similarity:
+                continue
+
             filename = row.get("filename")
             page_number = row.get("page_number", 1)
             file_url = row.get("file_url")
+            content = row.get("content", "")
 
             # Generate direct hyperlink to exact PDF page (#page=N)
             # Prioritize Supabase Storage public URL if available, else local server URL
@@ -289,10 +306,11 @@ class VectorStoreService:
                 "status": row.get("status"),
                 "file_url": file_url,
                 "storage_path": row.get("storage_path"),
-                "content": row.get("content"),
+                "content": content,
                 "page_number": page_number,
-                "similarity": row.get("similarity"),
+                "similarity": sim,
                 "hyperlink": hyperlink,
+                "search_query": query,
                 "metadata": row.get("metadata", {}),
             })
 
@@ -337,5 +355,83 @@ class VectorStoreService:
         res = supabase.table("documents").delete().eq("document_id", document_id).execute()
         return bool(res.data)
 
+    def ask_rag_question(
+        self,
+        query: str,
+        conversation_history: Optional[List[Dict[str, str]]] = None,
+        department: Optional[str] = None,
+        document_id: Optional[str] = None,
+        for_user_id: Optional[str] = None,
+        user_role: str = "admin",
+        base_url: Optional[str] = None,
+        min_similarity: float = 0.70,
+    ) -> Dict[str, Any]:
+        """Performs vector search and synthesizes an answer using Gemini 3.8 Flash with exact source citations (min similarity >= 0.70)."""
+        matched_sources = self.similarity_search(
+            query=query,
+            k=4,
+            department=department,
+            document_id=document_id,
+            for_user_id=for_user_id,
+            user_role=user_role,
+            base_url=base_url,
+            min_similarity=min_similarity,
+        )
+
+        if not matched_sources:
+            return {
+                "answer": "No matching SOP document sections met the minimum confidence threshold (≥ 70% match) for this question.",
+                "sources": [],
+            }
+
+        context_blocks = []
+        for i, s in enumerate(matched_sources, 1):
+            doc_label = s.get("document_name") or s.get("filename") or f"Doc {i}"
+            pg = s.get("page_number", 1)
+            context_blocks.append(f"[Source {i}: {doc_label}, Page {pg}]\n{s.get('content')}")
+        context_str = "\n\n".join(context_blocks)
+
+        system_prompt = (
+            "You are an expert AI SOP Assistant for pharmaceutical, manufacturing, and operational compliance.\n"
+            "Answer the user's question accurately, clearly, and concisely based on the retrieved context.\n"
+            "Explicitly mention document names and page numbers when stating facts.\n"
+            "If the context doesn't contain sufficient details, state that honestly."
+        )
+
+        answer_text = ""
+        try:
+            from langchain_google_genai import ChatGoogleGenerativeAI
+            llm = ChatGoogleGenerativeAI(
+                model="gemini-3.8-flash",
+                google_api_key=settings.GOOGLE_API_KEY,
+                temperature=0.2,
+            )
+
+            messages = [("system", system_prompt)]
+            if conversation_history:
+                for msg in conversation_history[-6:]:
+                    role = "human" if msg.get("role") == "user" else "assistant"
+                    messages.append((role, msg.get("content", "")))
+
+            user_content = f"SOP Document Context:\n{context_str}\n\nQuestion: {query}"
+            messages.append(("human", user_content))
+
+            ai_response = llm.invoke(messages)
+            # Extract text content cleanly
+            raw_content = ai_response.content
+            if isinstance(raw_content, list):
+                answer_text = "".join([part.get("text", "") if isinstance(part, dict) else str(part) for part in raw_content])
+            else:
+                answer_text = str(raw_content)
+        except Exception as llm_err:
+            print(f"Notice: Gemini LLM generation limit/error ({llm_err}). Returning retrieved sources directly.")
+            answer_text = "Here are the matching SOP sections retrieved from your verified documents:"
+
+        return {
+            "answer": answer_text,
+            "sources": matched_sources,
+        }
+
 
 vector_store_service = VectorStoreService()
+

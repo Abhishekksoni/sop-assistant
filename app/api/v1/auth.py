@@ -53,6 +53,7 @@ def login(payload: LoginRequest):
     # Create JWT access token
     token_payload = {
         "sub": user["user_id"],
+        "user_id": user["user_id"],
         "email": user["email"],
         "role": user["role"],
         "is_master_admin": user.get("is_master_admin", False),

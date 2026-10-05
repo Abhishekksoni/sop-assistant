@@ -1,0 +1,64 @@
+@import "tailwindcss";
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+:root {
+  --bg-primary: #ffffff;
+  --bg-secondary: #f9f9f9;
+  --bg-sidebar: #f3f3f3;
+  --bg-surface: #ffffff;
+  --bg-input: #ffffff;
+  --border-color: #e5e5e5;
+  --text-primary: #0d0d0d;
+  --text-secondary: #676767;
+  --text-muted: #8e8e8e;
+  --accent: #10a37f;
+}
+
+.dark {
+  --bg-primary: #212121;
+  --bg-secondary: #171717;
+  --bg-sidebar: #171717;
+  --bg-surface: #2f2f2f;
+  --bg-input: #2f2f2f;
+  --border-color: #2f2f2f;
+  --text-primary: #ececec;
+  --text-secondary: #b4b4b4;
+  --text-muted: #8e8e8e;
+  --accent: #10a37f;
+}
+
+body {
+  background-color: var(--bg-primary);
+  color: var(--text-primary);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  overflow: hidden;
+}
+
+/* Custom modern thin scrollbars */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(140, 140, 140, 0.3);
+  border-radius: 9999px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(140, 140, 140, 0.5);
+}
+
+/* DRM & Print Protection: Prevent browser print and export of secured SOP documents */
+@media print {
+  html, body {
+    display: none !important;
+    visibility: hidden !important;
+  }
+}
+
